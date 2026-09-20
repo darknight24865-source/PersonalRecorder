@@ -71,10 +71,12 @@ jobs:
         id: meta
         run: |
           REF="${GITHUB_REF#refs/heads/}"
+          # GHCR requires lowercase repository names.
+          REPO_LC="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
           if [ "$REF" = "main" ] || [ "$REF" = "master" ]; then
-            echo "tags=ghcr.io/${{ github.repository }}-dashboard:latest" >> "$GITHUB_OUTPUT"
+            echo "tags=ghcr.io/${REPO_LC}-dashboard:latest" >> "$GITHUB_OUTPUT"
           else
-            echo "tags=ghcr.io/${{ github.repository }}-dashboard:$REF" >> "$GITHUB_OUTPUT"
+            echo "tags=ghcr.io/${REPO_LC}-dashboard:$REF" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Log in to GHCR
@@ -111,7 +113,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        run: |
+          SDKMANAGER=$(command -v sdkmanager || find "$ANDROID_SDK_ROOT" -name sdkmanager -path "*cmdline-tools*" 2>/dev/null | head -1)
+          echo "using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null
 
       - name: Restore debug keystore (signature consistency)
         run: |
@@ -163,7 +170,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        run: |
+          SDKMANAGER=$(command -v sdkmanager || find "$ANDROID_SDK_ROOT" -name sdkmanager -path "*cmdline-tools*" 2>/dev/null | head -1)
+          echo "using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null
 
       - name: Restore debug keystore (signature consistency)
         run: |
