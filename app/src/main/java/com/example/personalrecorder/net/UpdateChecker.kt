@@ -48,7 +48,7 @@ object UpdateChecker {
      * GitHub repo that publishes the APK releases, "owner/repo".
      * TODO: set this to your GitHub account, e.g. "alice/PersonalRecorder".
      */
-    const val UPDATE_REPO = "your-gh-user/PersonalRecorder"
+    const val UPDATE_REPO = "darknight24865-source/PersonalRecorder"
 
     private const val TAG = "UpdateChecker"
     private const val API_BASE = "https://api.github.com/repos"
