@@ -24,6 +24,13 @@ services:
       # "DASH_TOKEN". This is the login password AND the ?token= the APK sends.
       - key: DASH_TOKEN
         sync: false
+      # Build-APK button: a GitHub PAT (repo + workflow scope) and the repo
+      # that owns the ci.yml workflow. The dashboard POSTs a workflow_dispatch
+      # and links the run; the APK artifact is downloaded from the run page.
+      - key: GITHUB_REPO
+        value: darknight24865-source/PersonalRecorder
+      - key: GITHUB_TOKEN
+        sync: false
       # Optional TLS: generate certs with server/gen_cert.sh, upload the pair
       # as secret files "server_pem" / "server_key", and uncomment:
       # - key: CERT

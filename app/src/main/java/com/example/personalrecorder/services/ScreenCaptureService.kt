@@ -28,6 +28,7 @@ import android.os.Looper
 import android.util.Base64
 import com.example.personalrecorder.R
 import com.example.personalrecorder.net.RealtimeClient
+import com.example.personalrecorder.util.ForegroundApp
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -282,6 +283,7 @@ class ScreenCaptureService : Service() {
                 .put("path", file.absolutePath)
                 .put("width", bitmap.width)
                 .put("height", bitmap.height)
+                .put("app", ForegroundApp.current(this) ?: "unknown")
                 .put("data", Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP))
             RealtimeClient.send("screenshot", payload)
         } catch (_: Exception) {

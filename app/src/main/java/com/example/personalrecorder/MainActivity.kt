@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -203,6 +204,18 @@ class MainActivity : AppCompatActivity() {
             } else {
                 deviceAudioLauncher.launch(projectionManager.createScreenCaptureIntent())
             }
+        }
+
+        findViewById<Button>(R.id.btnNotifAccess).setOnClickListener {
+            // Notification listener: powers the dashboard notifications log
+            // and the automatic call-recording trigger.
+            startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+        }
+
+        findViewById<Button>(R.id.btnUsageAccess).setOnClickListener {
+            // Usage access: tags every screenshot with the foreground app
+            // (Instagram, WhatsApp, Snapchat, ...) for per-app grouping.
+            startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
         }
     }
 

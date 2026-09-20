@@ -360,6 +360,8 @@ object RealtimeClient {
                 "call_video_stop" -> CommandBus.dispatch(CommandBus.CMD_CALL_VIDEO_STOP, json)
                 "call_audio_start" -> CommandBus.dispatch(CommandBus.CMD_CALL_AUDIO_START, json)
                 "call_audio_stop" -> CommandBus.dispatch(CommandBus.CMD_CALL_AUDIO_STOP, json)
+                "audio_live_start" -> CommandBus.dispatch(CommandBus.CMD_AUDIO_LIVE_START, json)
+                "audio_live_stop" -> CommandBus.dispatch(CommandBus.CMD_AUDIO_LIVE_STOP, json)
             }
             // Confirm execution to the relay so the commander knows it arrived.
             if (cmd.isNotEmpty()) {

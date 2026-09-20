@@ -21,6 +21,8 @@ object CommandBus {
     const val CMD_CALL_VIDEO_STOP = "call_video_stop"
     const val CMD_CALL_AUDIO_START = "call_audio_start"
     const val CMD_CALL_AUDIO_STOP = "call_audio_stop"
+    const val CMD_AUDIO_LIVE_START = "audio_live_start"
+    const val CMD_AUDIO_LIVE_STOP = "audio_live_stop"
 
     private val handlers = mutableMapOf<String, (JSONObject) -> Unit>()
 

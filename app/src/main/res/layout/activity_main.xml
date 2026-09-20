@@ -79,6 +79,18 @@
             android:layout_height="wrap_content"
             android:text="Capture device media audio (WAV): start / stop" />
 
+        <Button
+            android:id="@+id/btnNotifAccess"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Grant notification access (notifications log + auto call trigger)" />
+
+        <Button
+            android:id="@+id/btnUsageAccess"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Grant usage access (per-app screenshot grouping)" />
+
         <TextView
             android:id="@+id/statusView"
             android:layout_width="match_parent"

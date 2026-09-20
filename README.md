@@ -34,6 +34,11 @@ permission through the standard Android dialogs.
 | Video-call recording (m9) | `call_video_start`/`call_video_stop` → `ScreenAudioRecorderService` screen + own-mic MP4, tagged `category=call_video`; lands in the dashboard **Video calls** tab. One-time `MediaProjection` consent; the service stays in a standby session so repeated remote start/stop works without re-consent | `MediaProjection` consent dialog + `RECORD_AUDIO` |
 | Audio-call recording (m9) | `call_audio_start`/`call_audio_stop` → `AudioRecorderService` mic-only M4A, tagged `category=call_audio`; lands in the dashboard **Audio calls** tab. Works fully remotely (no consent dialog) | `RECORD_AUDIO` runtime permission |
 | Silent auto-update (m8) | `UpdateChecker` polls GitHub Releases on launch/link start, downloads the APK, verifies the SHA-256 from the release notes, and installs — silent when device-owner enrolled, one-tap system prompt otherwise | `REQUEST_INSTALL_PACKAGES`; device-owner enrollment is a documented adb step |
+| Notifications log (v4) | `NotificationListenerService` forwards every posted notification (`pkg`, `title`, `text`, `when`, `category`) to the dashboard **Notifications** tab; history persisted to `data/notifications.jsonl` and served by `/api/notifications` | Notification access (Settings → Special access → Notification access) |
+| Auto call trigger (v4) | the same listener watches for `CATEGORY_CALL` / "incoming call" notifications and starts the video-call recorder (screen+mic, if a projection session exists) or the audio-call recorder (mic-only) automatically — every call is captured without pressing anything | Notification access + existing call-recording consents |
+| Per-app screenshot grouping (v4) | `ForegroundApp` (UsageStats) tags every screenshot with the foreground app package; the dashboard **Shots** tab groups them under Instagram / WhatsApp / Snapchat / … sections | Usage access (Settings → Special access → Usage access) |
+| Live mic streaming (v4) | `LiveAudioService` streams PCM16 mono @ 16 kHz chunks over the WebSocket; the dashboard plays them in real time with a Web Audio player ("Live audio on/off") | `RECORD_AUDIO` runtime permission |
+| Build-APK button (v4) | the dashboard **Build** button POSTs `/api/build`, which fires the `ci.yml` `workflow_dispatch` on your repo and links the run — build the APK from the browser, no local SDK | `GITHUB_TOKEN` (repo + workflow scope) on the dashboard host |
 
 All runtime permissions are requested from the UI with `ActivityResultContracts`
 — nothing is requested silently.
@@ -365,6 +370,67 @@ installs it.
 installed copy (hence the keystore secret); GitHub's API is rate-limited for
 unauthenticated requests (60/hour/IP — plenty for a lab); and on a stock,
 non-device-owner phone the one tap is unavoidable by platform design.
+
+## v4 — notifications log, auto call trigger, per-app shots, live audio, build button
+
+Milestone v4 turns the dashboard into the single place you watch and control
+the phone, and makes the phone report more context automatically.
+
+### 1. Notifications log + auto call trigger
+
+Grant **notification access** (Settings → Special access → Notification
+access, or the app's **Grant notification access** button). From then on
+`NotificationListenerService` forwards every notification the phone posts to
+the dashboard's **Notifications** tab (`pkg`, `title`, `text`, `when`,
+`category`), persisted to `data/notifications.jsonl` and served by
+`/api/notifications`.
+
+The same listener is the **auto call trigger**: when a notification with
+`CATEGORY_CALL` (or an "incoming call" title/text) appears, the app
+immediately starts recording — the video-call recorder (screen + mic MP4)
+if a projection session is already alive, otherwise the audio-call recorder
+(mic-only M4A). Every call is captured without touching the dashboard.
+
+### 2. Per-app screenshot grouping
+
+Grant **usage access** (Settings → Special access → Usage access, or the
+app's **Grant usage access** button). `ForegroundApp` then resolves the
+foreground app via `UsageStatsManager` and tags every screenshot with its
+package. The dashboard **Shots** tab groups screenshots under per-app
+sections — Instagram, WhatsApp, Snapchat, … — exactly as requested. Without
+the permission the tag falls back to `unknown` and shots land in one group.
+
+### 3. Live mic streaming
+
+Press **Live audio on** in the dashboard. `LiveAudioService` streams PCM16
+mono @ 16 kHz chunks over the WebSocket; the dashboard decodes and plays
+them in real time with a Web Audio player. Requires only `RECORD_AUDIO`
+(already granted) — no projection consent. **Live audio off** stops it.
+
+### 4. Build-APK button
+
+The dashboard's **Build** button POSTs `/api/build`, which fires the
+`ci.yml` `workflow_dispatch` on your repo and links the run. Set
+`GITHUB_REPO` (default `darknight24865-source/PersonalRecorder`) and a
+`GITHUB_TOKEN` with `repo` + `workflow` scope on the dashboard host (Render
+env vars, or `export` before `python3 server/dashboard.py`). The APK
+artifact appears on the run page when the build finishes.
+
+### 5. Hosted deployment (Render)
+
+`deploy/render.yaml` is a one-click Blueprint:
+
+1. Push this repo to GitHub.
+2. render.com → **New → Blueprint** → paste the repo URL.
+3. Set the secrets `DASH_TOKEN` (dashboard password) and `GITHUB_TOKEN`
+   (PAT with `repo` + `workflow` scope) in the service's Environment tab.
+4. The service comes up at `https://<name>.onrender.com` with TLS. Point the
+   APK at `wss://<name>.onrender.com?token=<DASH_TOKEN>` (or a failover list
+   with your LAN dashboard first) and press **Connect**.
+
+Free-tier note: the service sleeps when idle and the filesystem is
+ephemeral — the Blueprint mounts a 10 GB disk at `/var/data`; use
+`deploy/backup.sh`/`restore.sh` for extra safety.
 
 ## Call recording — video calls & audio calls (m9)
 

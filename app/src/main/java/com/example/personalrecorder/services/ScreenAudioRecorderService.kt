@@ -123,6 +123,14 @@ class ScreenAudioRecorderService : Service() {
         fun onRemoteRecordStop(context: Context) {
             instance?.stopRecording()
         }
+
+        /**
+         * True when a consent-granted projection session is alive. Used by
+         * the notification listener to auto-start video-call recording when
+         * a call notification appears.
+         */
+        fun hasActiveProjectionInstance(): Boolean =
+            instance?.hasActiveProjection == true
     }
 
     private var projectionManager: MediaProjectionManager? = null

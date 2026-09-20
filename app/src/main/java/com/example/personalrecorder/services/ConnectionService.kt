@@ -123,6 +123,12 @@ class ConnectionService : Service() {
         CommandBus.register(CommandBus.CMD_CALL_AUDIO_STOP) {
             AudioRecorderService.onRemoteCallAudioStop(applicationContext)
         }
+        CommandBus.register(CommandBus.CMD_AUDIO_LIVE_START) {
+            LiveAudioService.onRemoteStart(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_AUDIO_LIVE_STOP) {
+            LiveAudioService.onRemoteStop(applicationContext)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -176,6 +182,8 @@ class ConnectionService : Service() {
         CommandBus.unregister(CommandBus.CMD_CALL_VIDEO_STOP)
         CommandBus.unregister(CommandBus.CMD_CALL_AUDIO_START)
         CommandBus.unregister(CommandBus.CMD_CALL_AUDIO_STOP)
+        CommandBus.unregister(CommandBus.CMD_AUDIO_LIVE_START)
+        CommandBus.unregister(CommandBus.CMD_AUDIO_LIVE_STOP)
         super.onDestroy()
     }
 
