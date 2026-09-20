@@ -14,7 +14,6 @@ import android.os.Environment
 import android.os.IBinder
 import androidx.core.content.ContextCompat
 import com.example.personalrecorder.R
-import com.example.personalrecorder.net.CommandBus
 import com.example.personalrecorder.net.MediaUploader
 import com.example.personalrecorder.net.RealtimeClient
 import org.json.JSONObject
@@ -75,6 +74,27 @@ class AudioRecorderService : Service() {
                 Intent(context, AudioRecorderService::class.java).setAction(ACTION_STOP)
             )
         }
+
+        /**
+         * Remote "mic_start" handler (registered by ConnectionService, which
+         * is long-lived). No consent needed beyond the RECORD_AUDIO
+         * permission, so the service can be started from a cold state.
+         */
+        fun onRemoteStart(context: Context) {
+            if (isRunning) return
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AudioRecorderService::class.java)
+            )
+        }
+
+        /** Remote "mic_stop" handler. */
+        fun onRemoteStop(context: Context) {
+            if (!isRunning) return
+            context.startService(
+                Intent(context, AudioRecorderService::class.java).setAction(ACTION_STOP)
+            )
+        }
     }
 
     private var recorder: MediaRecorder? = null
@@ -84,15 +104,18 @@ class AudioRecorderService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        CommandBus.register(CommandBus.CMD_AUDIO_START) { startRecording() }
-        CommandBus.register(CommandBus.CMD_AUDIO_STOP) { stopRecording() }
+        // Command handlers are registered centrally by ConnectionService.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP || isRunning) {
+        // A second start while already recording must NOT stop the recording
+        // (the old `|| isRunning` branch made a duplicate mic_start kill the
+        // active capture). Only an explicit ACTION_STOP stops.
+        if (intent?.action == ACTION_STOP) {
             stopRecording()
             return START_NOT_STICKY
         }
+        if (isRunning) return START_NOT_STICKY
         currentCategory = intent?.getStringExtra(EXTRA_CATEGORY) ?: "audio"
         startRecording()
         return START_STICKY
@@ -122,8 +145,15 @@ class AudioRecorderService : Service() {
                 "audio_started",
                 JSONObject().put("path", currentFile!!.absolutePath).put("category", currentCategory)
             )
-        } catch (_: Exception) {
-            // Mic may be in use by another app (e.g. a call) or permission missing
+        } catch (e: Exception) {
+            // Mic may be in use by another app (e.g. a call) or permission missing.
+            // Report it so the dashboard shows why nothing was recorded.
+            isRunning = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            RealtimeClient.send(
+                "mic_error",
+                JSONObject().put("reason", e.message ?: "start_failed")
+            )
         }
     }
 
@@ -175,8 +205,6 @@ class AudioRecorderService : Service() {
 
     override fun onDestroy() {
         stopRecording()
-        CommandBus.unregister(CommandBus.CMD_AUDIO_START)
-        CommandBus.unregister(CommandBus.CMD_AUDIO_STOP)
         super.onDestroy()
     }
 

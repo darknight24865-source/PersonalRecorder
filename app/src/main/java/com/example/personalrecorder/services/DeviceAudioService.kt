@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
@@ -19,7 +20,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import com.example.personalrecorder.R
-import com.example.personalrecorder.net.CommandBus
 import com.example.personalrecorder.net.MediaUploader
 import com.example.personalrecorder.net.RealtimeClient
 import org.json.JSONObject
@@ -67,6 +67,28 @@ class DeviceAudioService : Service() {
         @Volatile
         var isRunning = false
             private set
+
+        /**
+         * Remote "deviceaudio_start" handler (registered by ConnectionService,
+         * which is long-lived). Playback capture needs the MediaProjection
+         * consent, so from a cold state the dashboard is told the phone owner
+         * must tap the screen-capture button once.
+         */
+        fun onRemoteStart(context: Context) {
+            if (isRunning) return
+            RealtimeClient.send(
+                "deviceaudio_consent_needed",
+                JSONObject().put("reason", "screen_capture_consent_required")
+            )
+        }
+
+        /** Remote "deviceaudio_stop" handler. */
+        fun onRemoteStop(context: Context) {
+            if (!isRunning) return
+            context.startService(
+                Intent(context, DeviceAudioService::class.java).setAction(ACTION_STOP)
+            )
+        }
     }
 
     private var projectionManager: MediaProjectionManager? = null
@@ -80,8 +102,7 @@ class DeviceAudioService : Service() {
         super.onCreate()
         projectionManager = getSystemService(MediaProjectionManager::class.java)
         createNotificationChannel()
-        CommandBus.register(CommandBus.CMD_DEV_AUDIO_START) { startCapture() }
-        CommandBus.register(CommandBus.CMD_DEV_AUDIO_STOP) { stopCapture() }
+        // Command handlers are registered centrally by ConnectionService.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -323,8 +344,6 @@ class DeviceAudioService : Service() {
 
     override fun onDestroy() {
         stopCapture()
-        CommandBus.unregister(CommandBus.CMD_DEV_AUDIO_START)
-        CommandBus.unregister(CommandBus.CMD_DEV_AUDIO_STOP)
         super.onDestroy()
     }
 

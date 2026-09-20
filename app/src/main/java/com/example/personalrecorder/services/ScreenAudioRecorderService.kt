@@ -20,7 +20,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import com.example.personalrecorder.R
-import com.example.personalrecorder.net.CommandBus
 import com.example.personalrecorder.net.MediaUploader
 import com.example.personalrecorder.net.RealtimeClient
 import org.json.JSONObject
@@ -100,6 +99,30 @@ class ScreenAudioRecorderService : Service() {
         fun onRemoteCallVideoStop(context: Context) {
             instance?.stopRecording()
         }
+
+        /**
+         * Remote "record_start" handler (registered by ConnectionService,
+         * which is long-lived). Starts a screen+mic recording if a
+         * consent-granted projection session is alive; otherwise the dashboard
+         * is told the phone owner must tap Record once.
+         */
+        fun onRemoteRecordStart(context: Context) {
+            val svc = instance
+            if (svc != null && svc.hasActiveProjection) {
+                svc.currentCategory = "video"
+                svc.startRecording()
+            } else {
+                RealtimeClient.send(
+                    "record_consent_needed",
+                    JSONObject().put("reason", "screen_capture_consent_required")
+                )
+            }
+        }
+
+        /** Remote "record_stop" handler: stops the current recording (keeps session). */
+        fun onRemoteRecordStop(context: Context) {
+            instance?.stopRecording()
+        }
     }
 
     private var projectionManager: MediaProjectionManager? = null
@@ -117,8 +140,7 @@ class ScreenAudioRecorderService : Service() {
         instance = this
         projectionManager = getSystemService(MediaProjectionManager::class.java)
         createNotificationChannel()
-        CommandBus.register(CommandBus.CMD_REC_START) { startRecording() }
-        CommandBus.register(CommandBus.CMD_REC_STOP) { stopRecording() }
+        // Command handlers are registered centrally by ConnectionService.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -353,8 +375,6 @@ class ScreenAudioRecorderService : Service() {
     override fun onDestroy() {
         stopRecording(standby = false)
         teardownResources()
-        CommandBus.unregister(CommandBus.CMD_REC_START)
-        CommandBus.unregister(CommandBus.CMD_REC_STOP)
         instance = null
         super.onDestroy()
     }

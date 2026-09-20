@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.location.Location
@@ -13,8 +14,8 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.example.personalrecorder.R
-import com.example.personalrecorder.net.CommandBus
 import com.example.personalrecorder.net.RealtimeClient
 import org.json.JSONObject
 import kotlin.jvm.Volatile
@@ -38,6 +39,27 @@ class LocationService : Service() {
         @Volatile
         var isRunning = false
             private set
+
+        /**
+         * Remote "location_start" handler (registered by ConnectionService,
+         * which is long-lived). No consent needed beyond the location
+         * permission, so the service can be started from a cold state.
+         */
+        fun onRemoteStart(context: Context) {
+            if (isRunning) return
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, LocationService::class.java)
+            )
+        }
+
+        /** Remote "location_stop" handler. */
+        fun onRemoteStop(context: Context) {
+            if (!isRunning) return
+            context.startService(
+                Intent(context, LocationService::class.java).setAction(ACTION_STOP)
+            )
+        }
     }
 
     private lateinit var locationManager: LocationManager
@@ -59,15 +81,18 @@ class LocationService : Service() {
         super.onCreate()
         locationManager = getSystemService(LocationManager::class.java)
         createNotificationChannel()
-        CommandBus.register(CommandBus.CMD_LOC_START) { startUpdates() }
-        CommandBus.register(CommandBus.CMD_LOC_STOP) { stopUpdates() }
+        // Command handlers are registered centrally by ConnectionService.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP || isRunning) {
+        // A second start while already streaming must NOT stop the stream
+        // (the old `|| isRunning` branch made a duplicate location_start kill
+        // the active stream). Only an explicit ACTION_STOP stops.
+        if (intent?.action == ACTION_STOP) {
             stopUpdates()
             return START_NOT_STICKY
         }
+        if (isRunning) return START_NOT_STICKY
         startUpdates()
         return START_STICKY
     }
@@ -88,7 +113,13 @@ class LocationService : Service() {
             locationManager.getLastKnownLocation(provider)?.let { listener.onLocationChanged(it) }
             RealtimeClient.send("location_started", JSONObject().put("provider", provider))
         } catch (e: SecurityException) {
-            stopUpdates()
+            isRunning = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            RealtimeClient.send(
+                "location_error",
+                JSONObject().put("reason", e.message ?: "permission_denied")
+            )
+            stopSelf()
         }
     }
 
@@ -131,8 +162,6 @@ class LocationService : Service() {
 
     override fun onDestroy() {
         stopUpdates()
-        CommandBus.unregister(CommandBus.CMD_LOC_START)
-        CommandBus.unregister(CommandBus.CMD_LOC_STOP)
         super.onDestroy()
     }
 

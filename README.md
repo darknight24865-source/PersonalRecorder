@@ -90,6 +90,16 @@ bucket when no device announced yet).
 | `location_start` / `location_stop` | Start/stop the location stream |
 | `record_start` / `record_stop` | Start/stop screen + mic recording to MP4 |
 | `deviceaudio_start` / `deviceaudio_stop` | Start/stop device media-audio capture to WAV (API 29+) |
+| `call_video_start` / `call_video_stop` | Start/stop a screen+mic recording tagged as a video call |
+| `call_audio_start` / `call_audio_stop` | Start/stop a mic recording tagged as an audio call |
+
+> **v3 routing fix:** every command is handled by the long-lived
+> `ConnectionService`, which cold-starts the right capture service via
+> `startForegroundService` (mic, location) or reports a `*_consent_needed`
+> event when the feature needs the one-time screen-capture dialog (capture,
+> record, deviceaudio, call_video). Commands therefore work even when no
+> capture service is running — the old per-service registration meant a
+> stopped service left commands with no handler (ack, but nothing happened).
 
 App → server events (JSON `{"type": ..., "ts": ..., "payload": {...}}`):
 
@@ -103,6 +113,8 @@ App → server events (JSON `{"type": ..., "ts": ..., "payload": {...}}`):
 | `audio_started` / `audio_stopped` | file path, format |
 | `recording_started` / `recording_stopped` / `recording_error` | file path, resolution, error reason |
 | `deviceaudio_started` / `deviceaudio_stopped` / `deviceaudio_error` | file path, sample rate, error reason |
+| `mic_error` / `location_error` | error reason (mic busy, permission missing, …) |
+| `capture_consent_needed` / `record_consent_needed` / `deviceaudio_consent_needed` / `call_video_consent_needed` | `reason`: the phone owner must tap the screen-capture button once |
 | `device_online` | sent once on WS open with `payload: {id, name, url}`: registers the phone in the dashboard's device list, marks its socket online and flushes commands queued while it was offline |
 | `media_upload_failed` | `path`, `kind`, `reason`, `attempts` — a finished recording could not be delivered to the dashboard |
 | `ack` | `cmd` echoed: the app received the command from the relay (the relay prints `cmd_accepted` next to the commander's request) |

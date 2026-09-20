@@ -27,7 +27,6 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Base64
 import com.example.personalrecorder.R
-import com.example.personalrecorder.net.CommandBus
 import com.example.personalrecorder.net.RealtimeClient
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -82,6 +81,28 @@ class ScreenCaptureService : Service() {
         @Volatile
         var isRunning = false
             private set
+
+        /** Live instance while the service is up (used by remote command handlers). */
+        @Volatile
+        private var instance: ScreenCaptureService? = null
+
+        /**
+         * Remote "capture" handler (registered by ConnectionService, which is
+         * long-lived). If a consent-granted projection session is alive the
+         * capture runs immediately; otherwise the dashboard is told the phone
+         * owner must tap the screen-capture button once.
+         */
+        fun onRemoteCapture(context: Context) {
+            val svc = instance
+            if (svc != null && svc.active.get()) {
+                svc.captureNow(force = true)
+            } else {
+                RealtimeClient.send(
+                    "capture_consent_needed",
+                    JSONObject().put("reason", "screen_capture_consent_required")
+                )
+            }
+        }
     }
 
     private lateinit var projectionManager: MediaProjectionManager
@@ -137,9 +158,10 @@ class ScreenCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         projectionManager = getSystemService(MediaProjectionManager::class.java)
         createNotificationChannel()
-        CommandBus.register(CommandBus.CMD_CAPTURE) { captureNow(force = true) }
+        // Command handlers are registered centrally by ConnectionService.
         registerReceiver(
             batteryReceiver,
             IntentFilter(Intent.ACTION_BATTERY_CHANGED)
@@ -353,7 +375,6 @@ class ScreenCaptureService : Service() {
                 try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
                 batteryReceiverRegistered = false
             }
-            CommandBus.unregister(CommandBus.CMD_CAPTURE)
             return
         }
         isRunning = false
@@ -372,12 +393,12 @@ class ScreenCaptureService : Service() {
             try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
             batteryReceiverRegistered = false
         }
-        CommandBus.unregister(CommandBus.CMD_CAPTURE)
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     override fun onDestroy() {
         teardown()
+        instance = null
         super.onDestroy()
     }
 
