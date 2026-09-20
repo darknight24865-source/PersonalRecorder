@@ -163,9 +163,14 @@ def set_device_online(dev_id: str, ws: web.WebSocketResponse, remote: str) -> No
         dev["last_seen"] = time.time()
 
 
-def set_device_offline(dev_id: str) -> None:
+def set_device_offline(dev_id: str, ws: web.WebSocketResponse | None = None) -> None:
     dev = devices.get(dev_id)
-    if dev is not None:
+    if dev is not None and (ws is None or dev.get("ws") is ws):
+        # Only mark the device offline when the closing socket is the one
+        # currently registered for it. The app can hold two sockets for the
+        # same device (ConnectionService + a direct RealtimeClient link);
+        # closing one of them must not flip the device offline while the
+        # other is still alive.
         dev["ws"] = None
         dev["online"] = False
 
@@ -179,10 +184,15 @@ def device_queue(dev_id: str) -> list[dict]:
 
 
 def resolve_target(to: str | None) -> str:
-    """Where a command without an explicit `to` goes: the single known device,
-    the legacy anonymous device, or the anonymous bucket if none is known."""
+    """Where a command without an explicit `to` goes: the single online device,
+    the single known device, the legacy anonymous device, or the anonymous
+    bucket if none is known. Preferring the online device keeps commands from
+    being misrouted when stale/offline entries linger in the registry."""
     if to:
         return to
+    online = [d for d in devices if devices[d].get("online")]
+    if len(online) == 1:
+        return online[0]
     known = sorted(devices, key=lambda d: devices[d].get("first_seen", 0))
     if len(known) == 1:
         return known[0]
@@ -478,12 +488,24 @@ async def device_ws_handler(request: web.Request) -> web.WebSocketResponse:
             broadcast_ui(json.dumps({"type": "audio_live", "payload": payload, "ts": ts}))
             continue
 
+        if mtype == "app_crash":
+            # Crash telemetry from the phone (PersonalRecorderApp handler).
+            # Persist + surface on the dashboard; not a generic event.
+            crash = {"ts": ts or int(time.time() * 1000), "dev": my_dev, "payload": payload}
+            try:
+                (data_dir / "crashes.jsonl").open("a").write(json.dumps(crash) + "\n")
+            except Exception:
+                pass
+            push_event("app_crash", crash, crash["ts"])
+            log(f"! APP CRASH [{my_dev}] {payload.get('class')}: {payload.get('msg')}")
+            continue
+
         # everything else: generic event (capture_started, recording_*, ...)
         log(f"* event {mtype} [{my_dev}]: {payload}")
         push_event(mtype, payload, ts)
 
     if my_dev is not None:
-        set_device_offline(my_dev)
+        set_device_offline(my_dev, ws)
         save_devices(data_dir)
         log(f"- device offline [{my_dev}] -- commands will be queued")
         push_event("device_offline", {"id": my_dev, "name": devices.get(my_dev, {}).get("name")})

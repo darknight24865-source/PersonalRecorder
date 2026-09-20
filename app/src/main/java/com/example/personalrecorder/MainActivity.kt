@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
@@ -126,8 +128,11 @@ class MainActivity : AppCompatActivity() {
                 action = ConnectionService.ACTION_START
                 putExtra(ConnectionService.EXTRA_URL, urls.first())
             }
+            // ConnectionService owns the link (it calls RealtimeClient.connect
+            // itself); calling connect() here too would open a second socket and
+            // make the dashboard flap online/offline when one of them closes.
             ContextCompat.startForegroundService(this, linkIntent)
-            RealtimeClient.connect(urls)
+            requestBatteryExemption()
         }
 
         findViewById<Button>(R.id.btnDisconnect).setOnClickListener {
@@ -242,12 +247,42 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.startForegroundService(this, linkIntent)
     }
 
+    /**
+     * Ask the OS to exempt this app from battery optimization. Without this,
+     * Android (especially Doze) can kill the connection service in the
+     * background and the dashboard link silently drops until the app is
+     * reopened. The user taps "Allow" once; the exemption then persists.
+     */
+    private fun requestBatteryExemption() {
+        if (Build.VERSION.SDK_INT < 23) return
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        try {
+            val intent = Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+            log("Battery optimization exemption requested — tap Allow")
+        } catch (_: Exception) {
+            // Some OEMs block the direct request; fall back to the settings page.
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun ensureRuntimePermissions() {
         val required = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         )
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Android 14+ requires this for a microphone foreground service
+            // (call recording / live audio).
+            required.add(Manifest.permission.FOREGROUND_SERVICE_MICROPHONE)
+        }
         if (Build.VERSION.SDK_INT >= 33) {
             required.add(Manifest.permission.POST_NOTIFICATIONS)
         }

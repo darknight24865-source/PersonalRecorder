@@ -20,6 +20,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Keep the link alive: exempt from battery optimization so the OS
+         does not kill the connection service in the background. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Foreground-app tagging for screenshots (user grants via Settings) -->
     <uses-permission
@@ -27,6 +30,7 @@
         tools:ignore="ProtectedPermissions" />
 
     <application
+        android:name=".PersonalRecorderApp"
         android:allowBackup="false"
         android:testOnly="false"
         android:icon="@mipmap/ic_launcher"

@@ -124,7 +124,22 @@ class LiveAudioService : Service() {
         }
         recorder = rec
         stopFlag.set(false)
-        startInForeground()
+        try {
+            startInForeground()
+        } catch (e: Exception) {
+            // Android 14 + targetSdk 34: startForeground(...MICROPHONE) throws
+            // SecurityException when the app is not in the eligible state (or
+            // lacks the foreground-service microphone permission). Report it
+            // instead of letting it crash the process and drop the link.
+            rec.release()
+            recorder = null
+            RealtimeClient.send(
+                "audio_live_error",
+                JSONObject().put("reason", e.message ?: "start_foreground_failed")
+            )
+            stopSelf()
+            return
+        }
         recordThread = HandlerThread("live_audio").also { it.start() }
         recordHandler = Handler(recordThread!!.looper)
         recordHandler!!.post {

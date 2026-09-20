@@ -7,3 +7,5 @@ captures/
 .kotlin/
 *.zip
 data/
+__pycache__/
+*.pyc

@@ -11,7 +11,7 @@ android {
         applicationId = "com.example.personalrecorder"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
+        versionCode = 9
         versionName = "1.0"
     }
 

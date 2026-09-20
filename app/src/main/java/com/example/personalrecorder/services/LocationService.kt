@@ -33,7 +33,10 @@ class LocationService : Service() {
         const val ACTION_STOP = "action_stop"
         const val CHANNEL_ID = "location_channel"
         const val MIN_TIME_MS = 5000L
-        const val MIN_DISTANCE_M = 5f
+        // 0f = report every fix, even when the phone is stationary.
+        // A non-zero distance threshold silently stops the stream on a
+        // desk phone (the dashboard then looks "stuck").
+        const val MIN_DISTANCE_M = 0f
         private const val NOTIFICATION_ID = 1003
 
         @Volatile
@@ -99,12 +102,29 @@ class LocationService : Service() {
 
     private fun startUpdates() {
         if (isRunning) return
-        startInForeground()
+        try {
+            startInForeground()
+        } catch (e: Exception) {
+            // Never let a foreground-service start failure (e.g. missing
+            // location permission on Android 14) crash the whole app and
+            // drop the dashboard link. Report it and stop cleanly.
+            RealtimeClient.send(
+                "location_error",
+                JSONObject().put("reason", e.message ?: "fgs_start_failed")
+            )
+            stopSelf()
+            return
+        }
         isRunning = true
-        val provider = if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            LocationManager.GPS_PROVIDER
-        } else {
-            LocationManager.NETWORK_PROVIDER
+        // Prefer the fused provider (best accuracy + works indoors), then
+        // GPS, then network. GPS-only selection stalls indoors where the
+        // phone cannot get a satellite lock.
+        val provider = when {
+            locationManager.getProvider(LocationManager.FUSED_PROVIDER) != null ->
+                LocationManager.FUSED_PROVIDER
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+                LocationManager.GPS_PROVIDER
+            else -> LocationManager.NETWORK_PROVIDER
         }
         try {
             locationManager.requestLocationUpdates(
