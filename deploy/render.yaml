@@ -1,0 +1,36 @@
+# Render Blueprint — deploy the dashboard from the repo with one click:
+#   https://dashboard.render.com/blueprints  ->  "New Blueprint Instance"
+# (or "New +" -> "Blueprint", then paste this repo's URL.)
+#
+# Free tier note (as of 2026): free web services get 512 MB RAM and WebSocket
+# support, but NO persistent disk. Without the disk below the data dir is
+# wiped on every redeploy — use deploy/backup.sh + restore.sh to keep media,
+# or a paid plan for the persistent disk. WebSockets are supported.
+services:
+  - type: web
+    name: personalrecorder-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install --no-cache-dir -r server/requirements.txt
+    startCommand: >-
+      python server/dashboard.py
+      --host 0.0.0.0 --port $PORT
+      --out /var/data
+      --token $DASH_TOKEN
+    healthCheckPath: /api/status
+    autoDeploy: true
+    envVars:
+      # Set once: Render -> Dashboard service -> Environment -> add secret
+      # "DASH_TOKEN". This is the login password AND the ?token= the APK sends.
+      - key: DASH_TOKEN
+        sync: false
+      # Optional TLS: generate certs with server/gen_cert.sh, upload the pair
+      # as secret files "server_pem" / "server_key", and uncomment:
+      # - key: CERT
+      #   value: /etc/secrets/server.pem
+      # - key: KEY
+      #   value: /etc/secrets/server.key
+    disk:
+      name: dashboard-data
+      mountPath: /var/data
+      sizeGB: 10

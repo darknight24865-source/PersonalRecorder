@@ -1,0 +1,14 @@
+.git
+.gitignore
+.gradle
+.kotlin
+build
+app
+*.iml
+.captures
+data
+server/__pycache__
+__pycache__
+local.properties
+*.apk
+poc_dash_*.txt

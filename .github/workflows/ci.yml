@@ -1,0 +1,185 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-check:
+    name: Dashboard server + e2e harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install server deps (aiohttp, websockets)
+        run: pip install -r server/requirements.txt websockets
+
+      - name: Syntax check
+        run: python3 -m py_compile server/dashboard.py server/send_command.py
+
+      - name: Boot dashboard with a throwaway token
+        run: |
+          mkdir -p /tmp/pr_ci_data
+          python3 server/dashboard.py --host 127.0.0.1 --port 8899 \
+            --token ci-secret-token --out /tmp/pr_ci_data &
+          echo $! > /tmp/pr_ci.pid
+          for i in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:8899/api/status >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+
+      - name: Run e2e harness (multi-device checks)
+        env:
+          PR_BASE: "http://127.0.0.1:8899"
+          PR_WS: "ws://127.0.0.1:8899"
+          PR_TOKEN: "ci-secret-token"
+        run: python3 harness/poc_dash.py
+
+      - name: Fail on harness regression
+        if: ${{ !success() }}
+        run: echo "::error::e2e harness failed — see step log" && exit 1
+
+      - name: Stop server
+        if: always()
+        run: kill "$(cat /tmp/pr_ci.pid)" 2>/dev/null || true
+
+  docker:
+    name: Build & publish container image
+    if: github.event_name != 'pull_request'
+    needs: server-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tags
+        id: meta
+        run: |
+          REF="${GITHUB_REF#refs/heads/}"
+          if [ "$REF" = "main" ] || [ "$REF" = "master" ]; then
+            echo "tags=ghcr.io/${{ github.repository }}-dashboard:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=ghcr.io/${{ github.repository }}-dashboard:$REF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+  release:
+    # Publish a GitHub Release (tag v<versionCode>) with the debug APK
+    # whenever code lands on main/master. The app's UpdateChecker polls
+    # /releases/latest and auto-installs newer versions, so "push the
+    # update" == "bump versionCode, push to main".
+    name: Publish APK release
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: server-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Restore debug keystore (signature consistency)
+        run: |
+          if [ -z "${{ secrets.DEBUG_KEYSTORE_B64 }}" ]; then
+            echo "::error::DEBUG_KEYSTORE_B64 secret is not set. Add it (base64 of ~/.android/debug.keystore) so CI APKs match your local signature — otherwise the app cannot update over an installed copy."
+            exit 1
+          fi
+          mkdir -p "$HOME/.android"
+          echo "${{ secrets.DEBUG_KEYSTORE_B64 }}" | base64 -d > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: Compute versionCode and sha256
+        id: meta
+        run: |
+          VERSION_CODE=$(grep -oE 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' app/build.gradle.kts | grep -oE '[0-9]+' | head -1)
+          SHA256=$(sha256sum app/build/outputs/apk/debug/app-debug.apk | awk '{print $1}')
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release (skip if tag already exists)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.meta.outputs.version_code }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — nothing to do. Bump versionCode in app/build.gradle.kts to publish a new update."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            app/build/outputs/apk/debug/app-debug.apk \
+            --title "PersonalRecorder $TAG" \
+            --notes "Auto-generated by CI. sha256: ${{ steps.meta.outputs.sha256 }}"
+
+  apk:
+    # Optional: build the debug APK on demand (needs a few minutes of SDK
+    # downloads). Run from the Actions tab -> ci -> Run workflow.
+    name: Build debug APK
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Restore debug keystore (signature consistency)
+        run: |
+          if [ -z "${{ secrets.DEBUG_KEYSTORE_B64 }}" ]; then
+            echo "::error::DEBUG_KEYSTORE_B64 secret is not set. Add it (base64 of ~/.android/debug.keystore) so CI APKs match your local signature."
+            exit 1
+          fi
+          mkdir -p "$HOME/.android"
+          echo "${{ secrets.DEBUG_KEYSTORE_B64 }}" | base64 -d > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Build debug APK (gradle wrapper, AGP 8.5.2)
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk

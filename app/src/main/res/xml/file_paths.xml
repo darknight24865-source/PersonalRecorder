@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider paths: only the cache/updates dir is exposed, and only to
+     the system package installer via a grant URI (one-tap install path). -->
+<paths>
+    <cache-path
+        name="updates"
+        path="updates/" />
+</paths>

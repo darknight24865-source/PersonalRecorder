@@ -1,0 +1,36 @@
+# PersonalRecorder dashboard — one-command hosting on any Docker box
+# (VPS, NAS, Raspberry Pi) or locally. Companion to the GitHub Actions
+# workflow that publishes the image to GHCR:
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Secrets: copy deploy/.env.example to .env next to this file and edit.
+services:
+  dashboard:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ghcr.io/your-gh-user/personalrecorder-dashboard:latest
+    container_name: pr-dashboard
+    restart: unless-stopped
+    ports:
+      - "${DASH_PORT:-8765}:8765"
+    environment:
+      # Password for the web UI + command channel (REQUIRED on any public host)
+      TOKEN: "${DASH_TOKEN:?set DASH_TOKEN in .env}"
+      # Optional TLS (wss). Generate with server/gen_cert.sh and mount the
+      # certs directory read-only:
+      #   CERT: /certs/server.pem
+      #   KEY:  /certs/server.key
+    volumes:
+      - dash-data:/data
+      # - ./certs:/certs:ro
+    healthcheck:
+      # /api/status answers 200 without auth and proves the server is up.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/status', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  dash-data:

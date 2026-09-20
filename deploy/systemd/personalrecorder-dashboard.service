@@ -1,0 +1,32 @@
+[Unit]
+Description=PersonalRecorder dashboard (web monitor + device relay)
+Documentation=https://github.com/<you>/PersonalRecorder#readme
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as an unprivileged user owning /var/lib/personalrecorder:
+#   sudo useradd --system --home /opt/personalrecorder --shell /usr/sbin/nologin personalrecorder
+User=personalrecorder
+Group=personalrecorder
+WorkingDirectory=/opt/personalrecorder/server
+# Token/PORT live in this file (chmod 600), so the password never shows
+# up in `systemctl status` or the unit file itself.
+EnvironmentFile=-/etc/personalrecorder/dashboard.env
+# ${VAR} values come from the EnvironmentFile; DATA_DIR must match
+# ReadWritePaths below.
+ExecStart=/usr/bin/python3 /opt/personalrecorder/server/dashboard.py --host 0.0.0.0 --port ${PR_PORT} --out ${PR_DATA_DIR} --token ${PR_TOKEN}
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the service only needs its own data dir writable.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/personalrecorder
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
